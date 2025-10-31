@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>車メーターOCR（Webだけで完結）</title>
+<meta name="description" content="カメラ撮影→OCR→ODO/時刻/シフト抽出→端末内保存→CSV出力をブラウザだけで実行する小型Webアプリ。">
+<style>
+  :root { --pad:12px; --gap:12px; --fg:#111; --muted:#666; --brand:#0a7cff; --ok:#0c7; --warn:#d60; --bg:#fafafa; }
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif}
+  header{padding:16px var(--pad);background:white;border-bottom:1px solid #e8e8e8;position:sticky;top:0;z-index:10}
+  h1{font-size:18px;margin:0 0 6px}
+  main{padding:var(--pad);display:grid;gap:var(--gap);max-width:980px;margin:auto}
+  .panel{background:white;border:1px solid #e8e8e8;border-radius:8px;padding:var(--pad)}
+  .row{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
+  video,canvas,img{max-width:100%;border-radius:6px;border:1px solid #ddd;background:#000}
+  label{font-size:13px;color:var(--muted)}
+  input,button,select,textarea{font-size:16px;padding:10px;border:1px solid #ccc;border-radius:6px}
+  button.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+  button.ghost{background:white}
+  .grid{display:grid;gap:var(--gap)}
+  .grid.cols-2{grid-template-columns:1fr 1fr}
+  @media (max-width:800px){ .grid.cols-2{grid-template-columns:1fr} }
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{border-bottom:1px solid #eee;padding:8px 6px;text-align:left}
+  th{background:#f7f7f7}
+  .hint{font-size:12px;color:var(--muted)}
+  .ok{color:var(--ok)} .warn{color:var(--warn)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Roboto Mono",monospace}
+</style>
+</head>
+<body>
+<header>
+  <h1>車メーターOCR（ブラウザ完結）</h1>
+  <div class="hint">カメラで撮影→OCR→<b>ODO / 時刻 / シフト</b>抽出→端末内保存（localStorage）→CSVエクスポート</div>
+</header>
+
+<main>
+  <!-- カメラ＆入力 -->
+  <section class="panel grid cols-2">
+    <div>
+      <div class="row">
+        <button id="btnStart" class="primary">カメラ起動</button>
+        <button id="btnShot" disabled>撮影</button>
+        <button id="btnStop" class="ghost" disabled>停止</button>
+      </div>
+      <div class="hint">※HTTPS環境推奨。背面カメラが選ばれない場合は停止→再起動してください。</div>
+      <video id="video" playsinline autoplay muted style="width:100%;aspect-ratio:16/9;"></video>
+    </div>
+    <div>
+      <div class="row">
+        <input id="fileInput" type="file" accept="image/*" capture="environment">
+        <button id="btnOCR" class="primary" disabled>OCR実行</button>
+      </div>
+      <canvas id="canvas" width="1280" height="720" style="width:100%;aspect-ratio:16/9;"></canvas>
+      <div class="row">
+        <label><input type="checkbox" id="chkBinarize" checked> 2値化（読み取り強化）</label>
+        <label>しきい値：<input id="threshold" type="range" min="80" max="200" value="140"></label>
+        <span id="procMsg" class="hint"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 結果表示／編集 -->
+  <section class="panel grid cols-2">
+    <div>
+      <h3>OCRテキスト（編集可）</h3>
+      <textarea id="rawText" rows="8" class="mono" placeholder="ここにOCR結果が入ります"></textarea>
+      <div class="hint">※外部送信はありません。端末内のみで処理します。</div>
+    </div>
+    <div>
+      <h3>抽出フィールド</h3>
+      <div class="grid">
+        <label>ODO (km)：<input id="fldOdo" inputmode="numeric" class="mono" placeholder="例：86589"></label>
+        <label>時刻 (hh:mm)：<input id="fldClock" class="mono" placeholder="例：8:10"></label>
+        <label>シフト (P/R/N/D/L/S)：<input id="fldShift" class="mono" placeholder="例：P"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnExtract">正規表現で抽出</button>
+        <button id="btnSave" class="primary">保存（localStorage）</button>
+        <button id="btnClear" class="ghost">全消去</button>
+      </div>
+      <div id="extractMsg" class="hint"></div>
+    </div>
+  </section>
+
+  <!-- ログ＆エクスポート -->
+  <section class="panel">
+    <h3>ログ（端末内保存）</h3>
+    <div class="row">
+      <button id="btnExport">CSVエクスポート</button>
+      <span class="hint">保存先：ブラウザlocalStorage（キー：<span class="mono">odolog</span>）</span>
+    </div>
+    <table id="tbl">
+      <thead><tr>
+        <th>#</th><th>保存日時</th><th>ODO(km)</th><th>シフト</th><th>時刻</th><th>OCRテキスト（抜粋）</th><th>操作</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 出典 -->
+  <section class="panel">
+    <h3>使用API・ライブラリ（出典）</h3>
+    <ul>
+      <li>MediaDevices.getUserMedia（HTTPS要）— MDN Web Docs（日本語）</li>
+      <li>MediaDevices／Navigator.mediaDevices — MDN Web Docs（日本語）</li>
+      <li>HTML <code>capture</code> 属性（背面カメラ指示、実装差あり）— MDN</li>
+      <li>Tesseract.js（ブラウザで動く純JS OCR）— GitHub / 公式サイト</li>
+    </ul>
+    <div class="hint">※各リンクは本文末尾の参考資料に記載。</div>
+  </section>
+</main>
+
+<!-- Tesseract.js（CDN） -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js" integrity="" crossorigin="anonymous"></script>
+
+<script>
+/* ========= ユーティリティ ========= */
+const $ = (s)=>document.querySelector(s);
+const video = $("#video");
+const canvas = $("#canvas");
+const ctx = canvas.getContext("2d");
+const rawText = $("#rawText");
+const fldOdo = $("#fldOdo");
+const fldClock = $("#fldClock");
+const fldShift = $("#fldShift");
+const tblBody = $("#tbl tbody");
+const state = { stream:null, imageBitmap:null };
+
+/* ========= カメラ制御 ========= */
+async function startCamera(){
+  try{
+    const constraints = { video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:720} }, audio:false };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    state.stream = stream;
+    video.srcObject = stream;
+    $("#btnShot").disabled = false;
+    $("#btnStop").disabled = false;
+  }catch(err){
+    alert("カメラ起動に失敗しました。HTTPS・権限をご確認ください。\n" + err);
+  }
+}
+function stopCamera(){
+  if(state.stream){
+    state.stream.getTracks().forEach(t=>t.stop());
+    state.stream = null;
+  }
+  $("#btnShot").disabled = true;
+  $("#btnStop").disabled = true;
+}
+
+async function drawFromVideo(){
+  if(!video.videoWidth){ return; }
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  preprocess();
+}
+
+/* ========= 画像入力 ========= */
+$("#fileInput").addEventListener("change", async (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const img = new Image();
+  img.onload = ()=>{
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    preprocess();
+    $("#btnOCR").disabled = false;
+  };
+  img.src = URL.createObjectURL(file);
+});
+
+/* ========= 前処理（グレースケール＋2値化） ========= */
+function preprocess(){
+  const doBin = $("#chkBinarize").checked;
+  const threshold = Number($("#threshold").value);
+  const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+  const d = img.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    const y = 0.299*r + 0.587*g + 0.114*b; // グレースケール
+    if(doBin){
+      const v = y > threshold ? 255 : 0;
+      d[i]=d[i+1]=d[i+2]=v;
+    }else{
+      d[i]=d[i+1]=d[i+2]=y;
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* ========= OCR ========= */
+async function runOCR(){
+  $("#procMsg").textContent = "OCR実行中…（初回は数秒かかります）";
+  const blob = await new Promise(res=>canvas.toBlob(res,"image/png",1));
+  const imageUrl = URL.createObjectURL(blob);
+  try{
+    const result = await Tesseract.recognize(imageUrl, 'eng', {
+      tessedit_char_whitelist: '0123456789: ODOkmPRNDLS/.-',
+      logger: m => { if(m.status) $("#procMsg").textContent = `${m.status} ${Math.round((m.progress||0)*100)}%`; }
+    });
+    rawText.value = (result.data && result.data.text) ? result.data.text.trim() : "";
+    $("#procMsg").textContent = "OCR完了";
+  }catch(err){
+    $("#procMsg").textContent = "OCR失敗";
+    alert("OCRエラー: "+err);
+  }finally{
+    URL.revokeObjectURL(imageUrl);
+  }
+}
+
+/* ========= 抽出（正規表現） ========= */
+function extractFields(){
+  const t = rawText.value;
+  const reOdo = /ODO\s*([0-9]{4,7})\s*km/i;
+  const reClock = /\b([01]?\d|2[0-3]):[0-5]\d\b/;
+  const reShift = /\b(P|R|N|D|L|S)\b/;
+  const odo = (t.match(reOdo)||[])[1] || "";
+  const clk = (t.match(reClock)||[])[0] || "";
+  const shf = (t.match(reShift)||[])[1] || "";
+  fldOdo.value = odo;
+  fldClock.value = clk;
+  fldShift.value = shf;
+  $("#extractMsg").innerHTML = `抽出: ODO=<span class="mono">${odo||"-"}</span>, 時刻=<span class="mono">${clk||"-"}</span>, シフト=<span class="mono">${shf||"-"}</span>`;
+}
+
+/* ========= 保存／一覧 ========= */
+function loadLog(){
+  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
+  renderTable(arr);
+}
+function renderTable(arr){
+  tblBody.innerHTML = "";
+  arr.forEach((row,idx)=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${idx+1}</td>
+      <td class="mono">${row.timestamp}</td>
+      <td class="mono">${row.odo}</td>
+      <td class="mono">${row.shift}</td>
+      <td class="mono">${row.clock}</td>
+      <td class="mono">${(row.raw||"").slice(0,60).replace(/\n/g," ") }${(row.raw||"").length>60?"…":""}</td>
+      <td><button data-i="${idx}" class="del">削除</button></td>`;
+    tblBody.appendChild(tr);
+  });
+}
+function saveRow(){
+  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
+  const now = new Date();
+  const row = {
+    timestamp: now.toISOString().replace('T',' ').slice(0,19),
+    odo: fldOdo.value.trim(),
+    shift: fldShift.value.trim(),
+    clock: fldClock.value.trim(),
+    raw: rawText.value.trim()
+  };
+  arr.push(row);
+  localStorage.setItem("odolog", JSON.stringify(arr));
+  renderTable(arr);
+  alert("保存しました。");
+}
+function clearAll(){
+  if(confirm("全データを削除します。よろしいですか？")){
+    localStorage.removeItem("odolog");
+    renderTable([]);
+  }
+}
+tblBody.addEventListener("click",(e)=>{
+  if(e.target.matches("button.del")){
+    const i = Number(e.target.dataset.i);
+    const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
+    arr.splice(i,1);
+    localStorage.setItem("odolog", JSON.stringify(arr));
+    renderTable(arr);
+  }
+});
+
+/* ========= CSVエクスポート ========= */
+function exportCSV(){
+  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
+  const header = ["timestamp","odo","shift","clock","raw_text"];
+  const lines = [header.join(",")];
+  for(const r of arr){
+    const esc = s => `"${String(s??"").replace(/"/g,'""')}"`;
+    lines.push([r.timestamp,r.odo,r.shift,r.clock,esc(r.raw)].join(","));
+  }
+  const blob = new Blob([lines.join("\n")], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `odolog_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ========= イベント ========= */
+$("#btnStart").addEventListener("click", startCamera);
+$("#btnStop").addEventListener("click", stopCamera);
+$("#btnShot").addEventListener("click", async ()=>{
+  await drawFromVideo();
+  $("#btnOCR").disabled = false;
+});
+$("#threshold").addEventListener("input", preprocess);
+$("#chkBinarize").addEventListener("change", preprocess);
+$("#btnOCR").addEventListener("click", runOCR);
+$("#btnExtract").addEventListener("click", extractFields);
+$("#btnSave").addEventListener("click", saveRow);
+$("#btnClear").addEventListener("click", clearAll);
+$("#btnExport").addEventListener("click", exportCSV);
+window.addEventListener("load", loadLog);
+</script>
+</body>
+</html>
