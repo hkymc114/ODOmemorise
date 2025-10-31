@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ODO＆時刻OCR（ブラウザ完結・軽量版）</title>
-<meta name="description" content="車メーターのODO(km)と時刻(hh:mm)のみをブラウザ内でOCR抽出し、端末内に保存・CSVエクスポートする最小構成Webアプリ。">
+<title>ODO & 時刻 数字特化OCR（ブラウザ完結）</title>
+<meta name="description" content="車メーターの時刻(hh:mm)とODO(km)の数字だけをブラウザ内でOCR。ROI切り出し＋前処理＋保存までWebだけで完結。">
 <style>
-  :root{--pad:12px;--gap:12px;--fg:#111;--muted:#666;--brand:#0a7cff;--ok:#0c7;--bg:#fafafa}
+  :root{--pad:12px;--gap:12px;--fg:#111;--muted:#666;--brand:#0a7cff;--bg:#fafafa}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif}
-  header{padding:16px var(--pad);background:#fff;border-bottom:1px solid #e8e8e8;position:sticky;top:0;z-index:10}
+  header{padding:16px var(--pad);background:#fff;border-bottom:1px solid #e9e9e9;position:sticky;top:0;z-index:10}
   h1{font-size:18px;margin:0 0 6px}
   main{padding:var(--pad);display:grid;gap:var(--gap);max-width:980px;margin:auto}
-  .panel{background:#fff;border:1px solid #e8e8e8;border-radius:8px;padding:var(--pad)}
+  .panel{background:#fff;border:1px solid #e9e9e9;border-radius:8px;padding:var(--pad)}
   .row{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
   video,canvas,img{max-width:100%;border-radius:6px;border:1px solid #ddd;background:#000}
   input,button,select,textarea{font-size:16px;padding:10px;border:1px solid #ccc;border-radius:6px}
@@ -25,17 +25,20 @@
   th{background:#f7f7f7}
   .hint{font-size:12px;color:var(--muted)}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Roboto Mono",monospace}
-  .ok{color:var(--ok)}
+  .tag{display:inline-block;padding:2px 6px;border:1px solid #ddd;border-radius:999px;font-size:12px}
+  .preview-wrap{display:flex;gap:8px;flex-wrap:wrap}
+  .preview{display:flex;flex-direction:column;gap:6px}
+  .preview canvas{background:#000}
 </style>
 </head>
 <body>
 <header>
-  <h1>ODO＆時刻OCR（軽量・特化版）</h1>
-  <div class="hint">カメラ撮影または画像選択 → OCR → <b>ODO(km)</b> と <b>時刻(hh:mm)</b>のみ抽出 → 端末内保存（localStorage）→ CSV出力。</div>
+  <h1>ODO & 時刻 数字特化OCR</h1>
+  <div class="hint">カメラ/画像 → ROI切り出し（時刻・ODO）→ 前処理 → 数字専用OCR → 保存（端末内）→ CSV。</div>
 </header>
 
 <main>
-  <!-- 撮影／入力 -->
+  <!-- 入力＆全体プレビュー -->
   <section class="panel grid cols-2">
     <div>
       <div class="row">
@@ -43,7 +46,7 @@
         <button id="btnShot" disabled>撮影</button>
         <button id="btnStop" class="ghost" disabled>停止</button>
       </div>
-      <div class="hint">※HTTPS必須。背面カメラが選ばれない場合は停止→再起動。</div>
+      <div class="hint">※HTTPS必須。背面カメラが選ばれない場合は「停止→再起動」。</div>
       <video id="video" playsinline autoplay muted style="width:100%;aspect-ratio:16/9;"></video>
     </div>
     <div>
@@ -53,32 +56,57 @@
       </div>
       <canvas id="canvas" width="1280" height="720" style="width:100%;aspect-ratio:16/9;"></canvas>
       <div class="row">
-        <label><input type="checkbox" id="chkBinarize" checked> 2値化</label>
-        <label>しきい値：<input id="threshold" type="range" min="80" max="200" value="140"></label>
-        <span id="procMsg" class="hint"></span>
+        <label class="tag">前処理: グレースケール → コントラスト強調 → 2値化 → 2倍拡大</label>
       </div>
     </div>
   </section>
 
-  <!-- 結果／保存 -->
+  <!-- ROI調整＆プレビュー -->
+  <section class="panel">
+    <h3>関心領域（ROI）の微調整</h3>
+    <div class="hint">既定は「右側の上段=時刻」「右側の下段=ODO」。スライダーで上下位置/高さを%で微調整できます。</div>
+    <div class="row">
+      <label>右ブロック開始X%：<input id="roiX" type="range" min="40" max="70" value="55"> <span id="roiXv">55</span>%</label>
+      <label>時刻 Y%：<input id="roiTimeY" type="range" min="15" max="50" value="28"> <span id="roiTimeYv">28</span>%</label>
+      <label>ODO  Y%：<input id="roiOdoY"  type="range" min="45" max="85" value="70"> <span id="roiOdoYv">70</span>%</label>
+      <label>ROI 高さ%：<input id="roiH" type="range" min="8" max="25" value="14"> <span id="roiHv">14</span>%</label>
+      <label>2値化しきい値：<input id="thr" type="range" min="80" max="200" value="125"> <span id="thrv">125</span></label>
+    </div>
+    <div class="preview-wrap">
+      <div class="preview">
+        <div class="tag">時刻ROIプレビュー</div>
+        <canvas id="cTime" width="400" height="140"></canvas>
+      </div>
+      <div class="preview">
+        <div class="tag">ODO ROIプレビュー</div>
+        <canvas id="cOdo"  width="400" height="140"></canvas>
+      </div>
+      <div class="preview">
+        <div class="tag">2値化プレビュー（全体）</div>
+        <canvas id="cBin"  width="400" height="225"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- 結果＆保存 -->
   <section class="panel grid cols-2">
     <div>
-      <h3>OCRテキスト（編集可）</h3>
+      <h3>生テキスト（参考）</h3>
       <textarea id="rawText" rows="8" class="mono" placeholder="ここにOCR結果が入ります"></textarea>
-      <div class="hint">※外部送信は行いません（ブラウザ内で完結）。</div>
+      <div class="hint">※外部送信なし（ブラウザ内で完結）。</div>
     </div>
     <div>
-      <h3>抽出フィールド（ODO & 時刻のみ）</h3>
+      <h3>抽出フィールド</h3>
       <div class="grid">
-        <label>ODO (km)：<input id="fldOdo" inputmode="numeric" class="mono" placeholder="例：86589"></label>
-        <label>時刻 (hh:mm)：<input id="fldClock" class="mono" placeholder="例：8:10"></label>
+        <label>ODO (km)：<input id="fldOdo" inputmode="numeric" class="mono" placeholder="例：87069"></label>
+        <label>時刻 (hh:mm)：<input id="fldClock" class="mono" placeholder="例：10:17"></label>
       </div>
       <div class="row" style="margin-top:8px">
-        <button id="btnExtract">抽出</button>
+        <button id="btnExtract">抽出（正規表現＋補完）</button>
         <button id="btnSave" class="primary">保存（localStorage）</button>
         <button id="btnClear" class="ghost">全消去</button>
       </div>
-      <div id="extractMsg" class="hint"></div>
+      <div id="msg" class="hint"></div>
     </div>
   </section>
 
@@ -87,214 +115,240 @@
     <h3>ログ（端末内保存）</h3>
     <div class="row">
       <button id="btnExport">CSVエクスポート</button>
-      <span class="hint">保存先キー：<span class="mono">odolog</span></span>
+      <span class="hint">保存キー：<span class="mono">odolog</span></span>
     </div>
-    <table id="tbl">
-      <thead><tr><th>#</th><th>保存日時</th><th>ODO(km)</th><th>時刻</th><th>OCRテキスト（抜粋）</th><th>操作</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
-
-  <!-- 参考（使用リソース） -->
-  <section class="panel">
-    <h3>使用API・ライブラリ（出典）</h3>
-    <ul>
-      <li>MediaDevices.getUserMedia（カメラ取得・HTTPS要件）— MDN Web Docs</li>
-      <li>&lt;input capture="environment"&gt;（背面カメラ指示、実装差あり）— MDN</li>
-      <li>Tesseract.js（ブラウザで動作するJS OCRライブラリ）— 公式リポジトリ</li>
-    </ul>
+    <table id="tbl"><thead>
+      <tr><th>#</th><th>保存日時</th><th>ODO(km)</th><th>時刻</th><th>生テキスト抜粋</th><th>操作</th></tr>
+    </thead><tbody></tbody></table>
   </section>
 </main>
 
-<!-- Tesseract.js（CDN）：ブラウザ内でOCR実行 -->
+<!-- Tesseract.js（CDN） -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js" crossorigin="anonymous"></script>
 
 <script>
-/* ===== 要素参照 ===== */
-const $ = (s)=>document.querySelector(s);
-const video = $("#video");
-const canvas = $("#canvas");
-const ctx = canvas.getContext("2d");
-const rawText = $("#rawText");
-const fldOdo = $("#fldOdo");
-const fldClock = $("#fldClock");
-const tblBody = $("#tbl tbody");
-const state = { stream:null };
+/*** 要素参照 ***/
+const $=s=>document.querySelector(s);
+const video=$("#video"), canvas=$("#canvas"), ctx=canvas.getContext("2d");
+const cTime=$("#cTime"), cOdo=$("#cOdo"), cBin=$("#cBin");
+const rawText=$("#rawText"), fldOdo=$("#fldOdo"), fldClock=$("#fldClock"), msg=$("#msg"), tblBody=$("#tbl tbody");
+const state={stream:null};
 
-/* ===== カメラ制御 ===== */
+/*** カメラ ***/
 async function startCamera(){
   try{
-    const constraints = { video:{ facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720} }, audio:false };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    state.stream = stream;
-    video.srcObject = stream;
-    $("#btnShot").disabled = false;
-    $("#btnStop").disabled = false;
-  }catch(err){
-    alert("カメラ起動に失敗しました。HTTPSと権限をご確認ください。\n"+err);
-  }
+    const constraints={video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false};
+    const stream=await navigator.mediaDevices.getUserMedia(constraints);
+    state.stream=stream; video.srcObject=stream;
+    $("#btnShot").disabled=false; $("#btnStop").disabled=false;
+  }catch(e){ alert("カメラ起動に失敗しました。HTTPSと権限をご確認ください。\n"+e); }
 }
 function stopCamera(){
   if(state.stream){ state.stream.getTracks().forEach(t=>t.stop()); state.stream=null; }
-  $("#btnShot").disabled = true;
-  $("#btnStop").disabled = true;
+  $("#btnShot").disabled=true; $("#btnStop").disabled=true;
 }
 
-/* ===== 撮影 → キャンバス描画 ===== */
-async function drawFromVideo(){
+/*** 全体描画 ***/
+function drawFromVideo(){
   if(!video.videoWidth) return;
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  canvas.width=video.videoWidth; canvas.height=video.videoHeight;
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  preprocess();
-  $("#btnOCR").disabled = false;
+  $("#btnOCR").disabled=false;
+  updatePreviews();
 }
 
-/* ===== 画像ファイル入力 ===== */
+/*** 画像入力 ***/
 $("#fileInput").addEventListener("change",(e)=>{
-  const file = e.target.files[0]; if(!file) return;
-  const img = new Image();
-  img.onload = ()=>{
-    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-    ctx.drawImage(img,0,0,canvas.width,canvas.height);
-    preprocess(); $("#btnOCR").disabled = false;
-  };
-  img.src = URL.createObjectURL(file);
+  const file=e.target.files[0]; if(!file) return;
+  const img=new Image();
+  img.onload=()=>{ canvas.width=img.naturalWidth; canvas.height=img.naturalHeight; ctx.drawImage(img,0,0,canvas.width,canvas.height); $("#btnOCR").disabled=false; updatePreviews(); };
+  img.src=URL.createObjectURL(file);
 });
 
-/* ===== 前処理（グレースケール→任意2値化） ===== */
-function preprocess(){
-  const doBin = $("#chkBinarize").checked;
-  const threshold = Number($("#threshold").value);
-  const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-  const d = img.data;
+/*** ROIスライダー ***/
+const roiX=$("#roiX"), roiTimeY=$("#roiTimeY"), roiOdoY=$("#roiOdoY"), roiH=$("#roiH"), thr=$("#thr");
+for(const el of [roiX,roiTimeY,roiOdoY,roiH,thr]) el.addEventListener("input",()=>{
+  $("#roiXv").textContent=roiX.value;
+  $("#roiTimeYv").textContent=roiTimeY.value;
+  $("#roiOdoYv").textContent=roiOdoY.value;
+  $("#roiHv").textContent=roiH.value;
+  $("#thrv").textContent=thr.value;
+  updatePreviews();
+});
+
+/*** 前処理（全体とROI） ***/
+function preprocessTo(ctxSrc, sx, sy, sw, sh, scale=2, threshold=125){
+  // 切り出し
+  const tmp=document.createElement("canvas"); tmp.width=sw; tmp.height=sh;
+  const tctx=tmp.getContext("2d",{willReadFrequently:true});
+  tctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  // 2倍拡大（最近傍）
+  const up=document.createElement("canvas"); up.width=sw*scale; up.height=sh*scale;
+  const uctx=up.getContext("2d",{willReadFrequently:true});
+  uctx.imageSmoothingEnabled=false;
+  uctx.drawImage(tmp,0,0,up.width,up.height);
+
+  // グレースケール→線形ストレッチ→2値化
+  const img=uctx.getImageData(0,0,up.width,up.height); const d=img.data;
+  let min=255,max=0;
+  for(let i=0;i<d.length;i+=4){ const y=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; if(y<min)min=y; if(y>max)max=y; }
+  const range=Math.max(1,max-min);
   for(let i=0;i<d.length;i+=4){
-    const y = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-    if(doBin){ const v = y > threshold ? 255 : 0; d[i]=d[i+1]=d[i+2]=v; }
-    else { d[i]=d[i+1]=d[i+2]=y; }
+    const y=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    const ys=(y-min)*255/range; // ストレッチ
+    const v=ys>threshold?255:0;
+    d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
   }
-  ctx.putImageData(img,0,0);
+  uctx.putImageData(img,0,0);
+  // 出力（引数のctxSrcへ描画して返す）
+  ctxSrc.canvas.width=up.width; ctxSrc.canvas.height=up.height;
+  ctxSrc.drawImage(up,0,0);
 }
 
-/* ===== OCR実行（英数字特化） ===== */
+/*** プレビュー更新 ***/
+function updatePreviews(){
+  if(canvas.width===0) return;
+  const w=canvas.width, h=canvas.height;
+  const x = Math.round(w*Number(roiX.value)/100);
+  const rh= Math.round(h*Number(roiH.value)/100);
+  const ty= Math.round(h*Number(roiTimeY.value)/100);
+  const oy= Math.round(h*Number(roiOdoY.value)/100);
+  const thres= Number(thr.value);
+
+  // 全体2値化プレビュー
+  const binCtx=cBin.getContext("2d",{willReadFrequently:true});
+  preprocessTo(binCtx, 0, 0, w, h, 1, thres);
+
+  // 時刻ROI
+  const tctx=cTime.getContext("2d",{willReadFrequently:true});
+  preprocessTo(tctx, x, ty, w-x, rh, 2, thres);
+
+  // ODO ROI
+  const octx=cOdo.getContext("2d",{willReadFrequently:true});
+  preprocessTo(octx, x, oy, w-x, rh, 2, thres);
+}
+
+/*** OCR（数字専用） ***/
 async function runOCR(){
-  $("#procMsg").textContent = "OCR実行中…（初回は数秒かかります）";
-  const blob = await new Promise(res=>canvas.toBlob(res,"image/png",1));
-  const url = URL.createObjectURL(blob);
+  msg.textContent="OCR実行中…（初回は数秒）";
+
+  const timeBlob=await new Promise(res=>cTime.toBlob(res,"image/png",1));
+  const odoBlob =await new Promise(res=>cOdo.toBlob(res,"image/png",1));
+  const timeUrl=URL.createObjectURL(timeBlob);
+  const odoUrl =URL.createObjectURL(odoBlob);
+
   try{
-    const result = await Tesseract.recognize(url,'eng',{
-      tessedit_char_whitelist:'0123456789: ODOkm/-',
-      logger:m=>{ if(m.status) $("#procMsg").textContent = `${m.status} ${Math.round((m.progress||0)*100)}%`; }
+    // 時刻（数字＋コロンのみ）
+    const rTime=await Tesseract.recognize(timeUrl,'eng',{
+      tessedit_char_whitelist:'0123456789:',
+      logger:m=>{}
     });
-    rawText.value = (result.data && result.data.text ? result.data.text : "").trim();
-    $("#procMsg").textContent = "OCR完了";
-  }catch(err){
-    $("#procMsg").textContent = "OCR失敗";
-    alert("OCRエラー: "+err);
+    // ODO（数字のみ）
+    const rOdo=await Tesseract.recognize(odoUrl,'eng',{
+      tessedit_char_whitelist:'0123456789',
+      logger:m=>{}
+    });
+
+    const textTime=(rTime.data?.text||"").trim();
+    const textOdo =(rOdo.data?.text ||"").trim();
+    rawText.value = `TIME_ROI:\n${textTime}\n\nODO_ROI:\n${textOdo}`;
+
+    // 抽出＋補完
+    applyExtraction(textTime, textOdo);
+    msg.textContent="OCR完了";
+  }catch(e){
+    msg.textContent="OCR失敗"; alert("OCRエラー: "+e);
   }finally{
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(timeUrl); URL.revokeObjectURL(odoUrl);
   }
 }
 
-/* ===== 正規表現で抽出（ODO & 時刻のみ） ===== */
-function extractFields(){
-  const t = rawText.value;
-
-  // ODO: "ODO 86589 km" のような形式を想定
-  const reOdo = /ODO\s*([0-9]{4,7})\s*km/i;
-  let odo = (t.match(reOdo)||[])[1] || "";
-
-  // 時刻: "8:10" 〜 "23:59"
-  let clk = (t.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/)||[])[0] || "";
-
-  // 補助: コロンが飛んだケース "8 10" → 8:10 と推定（推論を含む）
+/*** 抽出ロジック（正規表現＋補完） ***/
+function applyExtraction(textTime, textOdo){
+  // 時刻: まずは正規「hh:mm」
+  let clk=(textTime.match(/\b([01]?\d|2[0-3]):[0-5]\d\b/)||[])[0]||"";
+  // 補助: コロン抜け（1017, 8 10 など）
   if(!clk){
-    const m = t.match(/\b([01]?\d|2[0-3])\D([0-5]\d)\b/);
-    if(m){ clk = `${m[1]}:${m[2]}`; } // 推論を含む
+    const m = textTime.replace(/[^\d]/g,"").match(/(\d{3,4})/);
+    if(m){
+      const s=m[1]; // 3 or 4桁
+      if(s.length===3){ clk=`${s[0]}:${s.slice(1)}`; }
+      if(s.length===4){ clk=`${s.slice(0,2)}:${s.slice(2)}`; }
+    }
   }
 
-  fldOdo.value = odo;
-  fldClock.value = clk;
-  $("#extractMsg").innerHTML = `抽出結果： ODO=<span class="mono">${odo||"-"}</span>, 時刻=<span class="mono">${clk||"-"}</span>`;
+  // ODO: 連続数字 4〜7桁を優先的に
+  let odo=(textOdo.replace(/[^\d]/g,"").match(/\d{4,7}/)||[])[0]||"";
+
+  fldClock.value=clk;
+  fldOdo.value=odo;
+  msg.innerHTML=`抽出: ODO=<span class="mono">${odo||"-"}</span>, 時刻=<span class="mono">${clk||"-"}</span>`;
 }
 
-/* ===== 保存／一覧／削除／CSV ===== */
-function loadLog(){
-  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
-  renderTable(arr);
-}
+/*** 保存／一覧／CSV ***/
+function loadLog(){ const arr=JSON.parse(localStorage.getItem("odolog")||"[]"); renderTable(arr); }
 function renderTable(arr){
   tblBody.innerHTML="";
   arr.forEach((r,i)=>{
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${i+1}</td>
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${i+1}</td>
       <td class="mono">${r.timestamp}</td>
       <td class="mono">${r.odo}</td>
       <td class="mono">${r.clock}</td>
       <td class="mono">${(r.raw||"").slice(0,60).replace(/\n/g," ")}${(r.raw||"").length>60?"…":""}</td>
-      <td><button class="del" data-i="${i}">削除</button></td>
-    `;
+      <td><button class="del" data-i="${i}">削除</button></td>`;
     tblBody.appendChild(tr);
   });
 }
 function saveRow(){
-  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
-  const now = new Date();
-  const row = {
+  const arr=JSON.parse(localStorage.getItem("odolog")||"[]");
+  const now=new Date();
+  arr.push({
     timestamp: now.toISOString().replace('T',' ').slice(0,19),
     odo: (fldOdo.value||"").trim(),
     clock: (fldClock.value||"").trim(),
     raw: (rawText.value||"").trim()
-  };
-  arr.push(row);
-  localStorage.setItem("odolog", JSON.stringify(arr));
+  });
+  localStorage.setItem("odolog",JSON.stringify(arr));
   renderTable(arr);
   alert("保存しました。");
 }
 function clearAll(){
   if(confirm("全データを削除します。よろしいですか？")){
-    localStorage.removeItem("odolog");
-    renderTable([]);
+    localStorage.removeItem("odolog"); renderTable([]);
   }
 }
-tblBody.addEventListener("click",(e)=>{
+$("#tbl").addEventListener("click",(e)=>{
   if(e.target.matches("button.del")){
-    const i = Number(e.target.dataset.i);
-    const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
-    arr.splice(i,1);
-    localStorage.setItem("odolog", JSON.stringify(arr));
-    renderTable(arr);
+    const i=Number(e.target.dataset.i);
+    const arr=JSON.parse(localStorage.getItem("odolog")||"[]");
+    arr.splice(i,1); localStorage.setItem("odolog",JSON.stringify(arr)); renderTable(arr);
   }
 });
 function exportCSV(){
-  const arr = JSON.parse(localStorage.getItem("odolog")||"[]");
-  const header = ["timestamp","odo","clock","raw_text"];
-  const lines = [header.join(",")];
+  const arr=JSON.parse(localStorage.getItem("odolog")||"[]");
+  const header=["timestamp","odo","clock","raw_text"];
+  const lines=[header.join(",")];
   for(const r of arr){
-    const esc = s=> `"${String(s??"").replace(/"/g,'""')}"`;
+    const esc=s=>`"${String(s??"").replace(/"/g,'""')}"`;
     lines.push([r.timestamp,r.odo,r.clock,esc(r.raw)].join(","));
   }
-  const blob = new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `odolog_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=`odolog_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
 }
 
-/* ===== イベント登録 ===== */
+/*** イベント ***/
 $("#btnStart").addEventListener("click", startCamera);
 $("#btnStop").addEventListener("click", stopCamera);
-$("#btnShot").addEventListener("click", async()=>{ await drawFromVideo(); $("#btnOCR").disabled=false; });
-$("#threshold").addEventListener("input", preprocess);
-$("#chkBinarize").addEventListener("change", preprocess);
+$("#btnShot").addEventListener("click", drawFromVideo);
 $("#btnOCR").addEventListener("click", runOCR);
-$("#btnExtract").addEventListener("click", extractFields);
+$("#btnExtract").addEventListener("click", ()=>applyExtraction(rawText.value, rawText.value));
 $("#btnSave").addEventListener("click", saveRow);
 $("#btnClear").addEventListener("click", clearAll);
 $("#btnExport").addEventListener("click", exportCSV);
-window.addEventListener("load", loadLog);
+window.addEventListener("load", ()=>{ loadLog(); updatePreviews(); });
 </script>
 </body>
-</html>
+</html>q
